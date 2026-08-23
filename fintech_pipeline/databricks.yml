@@ -1,0 +1,58 @@
+# databricks.yml
+# This is the main configuration file for the Databricks Asset Bundle.
+# It declares the project's identity, which variables the project needs,
+# and defines the "dev" and "prod" deployment targets.
+
+bundle:
+  name: fintech_pipeline
+  uuid: a8eed3e9-60f3-461e-b87d-4c52ac12c0f0
+
+# This line tells Databricks to also read any .yml file inside the
+# resources/ folder and include whatever resources those files define
+# (in this project, the Pipeline definition lives in
+# resources/fintech_pipeline.yml).
+include:
+  - resources/*.yml
+
+# Variable declarations. A variable here is just a placeholder name --
+# it has no value yet. The actual value gets filled in either inside a
+# specific target below, or from an environment variable when deploying.
+variables:
+  catalog:
+    description: The catalog to use
+  schema:
+    description: The schema to use
+  storage_account_key:
+    # This variable has NO default value here on purpose. Its value must
+    # come from an environment variable named BUNDLE_VAR_storage_account_key
+    # at deploy time, so the real key is never written into any file that
+    # gets committed to git.
+    description: Access key for the ADLS Gen2 storage account. Provided via the BUNDLE_VAR_storage_account_key environment variable, never hardcoded in this repo.
+
+# A "target" is one deployment destination -- think of it as one
+# environment. This project has two: dev and prod. Both point to the
+# SAME Databricks workspace, but each uses a DIFFERENT schema, so their
+# tables never collide with each other.
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://adb-7405618306957518.18.azuredatabricks.net
+    variables:
+      catalog: dbw_fintech_fdcg01
+      schema: dev
+    presets:
+      artifacts_dynamic_version: true
+
+  prod:
+    mode: production
+    workspace:
+      host: https://adb-7405618306957518.18.azuredatabricks.net
+      root_path: /Workspace/Users/felix.david.cordova.garcia@gmail.com/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog: dbw_fintech_fdcg01
+      schema: prod
+    permissions:
+      - user_name: felix.david.cordova.garcia@gmail.com
+        level: CAN_MANAGE

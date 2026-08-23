@@ -1,0 +1,57 @@
+# resources/fintech_pipeline.yml
+# Defines the Delta Live Tables Pipeline as code, so it can be deployed
+# consistently via CI/CD instead of being clicked together in the UI.
+
+resources:                              # top-level section listing all Databricks
+                                         # objects this bundle manages
+  pipelines:                            # this bundle manages one or more DLT Pipelines
+    fintech_cleaning_pipeline:          # internal identifier for THIS pipeline within
+                                         # the bundle (you reference it by this name
+                                         # elsewhere, e.g. in the Job definition later)
+
+      name: fintech-cleaning-pipeline-${bundle.target}
+      # The actual display name shown in the Databricks UI.
+      # ${bundle.target} inserts "dev" or "prod" automatically, so you get
+      # "fintech-cleaning-pipeline-dev" when deployed with --target dev,
+      # and "fintech-cleaning-pipeline-prod" with --target prod --
+      # avoids the two environments' pipelines colliding with the same name.
+
+      catalog: ${var.catalog}
+      # Which Unity Catalog catalog the pipeline's tables belong to.
+      # Pulled from the "catalog" variable you already defined in databricks.yml
+      # (dbw_fintech_fdcg01 in both dev and prod, per your config).
+
+      schema: ${var.schema}
+      # Which schema within that catalog. This is what makes dev/prod separate:
+      # resolves to "dev" or "prod" depending on which target you deploy.
+
+      serverless: false
+      # Same reason as before: serverless Pipelines don't allow custom
+      # spark_conf (needed for the storage account key), so this must be
+      # a classic (non-serverless) pipeline.
+
+      photon: false
+      # CHANGED to false, per your earlier decision -- your data volume
+      # is small, so Photon's extra cost isn't justified. (I had left
+      # "true" by mistake in the previous version -- good catch.)
+
+      clusters:                         # compute configuration for this pipeline
+        - label: default                # Databricks requires a "label" per cluster
+                                         # definition; "default" is the standard one
+          node_type_id: Standard_D4s_v3
+          # Explicitly pinned to the VM size you already confirmed works --
+          # avoids the CLUSTER_LAUNCH_RESOURCE_STOCKOUT error you hit before
+          # with an auto-selected default size.
+          num_workers: 1
+          # Single worker node -- matches your original interactive cluster
+          # setup (small data volume, no need for a multi-node cluster).
+
+          spark_conf:
+            fs.azure.account.key.stfintechpipeline01.dfs.core.windows.net: ${var.storage_account_key}
+
+      libraries:                        # tells the pipeline WHERE the DLT code lives
+        - notebook:
+            path: ../src/transformations/my_transformation.py
+            # Relative path from this YAML file to your DLT source code.
+            # This is the file with @dlt.table definitions for
+            # bronze_customers, silver_customers_unified, silver_customers_clean.
