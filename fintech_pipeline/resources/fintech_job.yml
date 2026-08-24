@@ -1,0 +1,40 @@
+# resources/fintech_job.yml
+# Defines a Databricks Job that chains three tasks in strict sequence:
+#   1. Run the DLT Pipeline (cleans the raw dirty data)
+#   2. Export the final cleaned Delta table as plain Parquet to /clean/
+#      (Snowpipe reads Parquet, not managed Delta tables directly)
+#   3. Run VACUUM maintenance on the cleaned table
+# "depends_on" is what enforces the order -- each task only starts
+# after the one it depends on has finished successfully.
+#
+# Tasks 2 and 3 reuse the existing interactive cluster
+# (fintech-cleaning-cluster) via existing_cluster_id, instead of
+# defining a new_cluster per task -- this workspace's API rejected
+# the new_cluster spec repeatedly with "Missing required field:
+# settings.cluster_spec.new_cluster.size" despite following the
+# documented single-node cluster format. Reusing an already-working,
+# manually verified cluster sidesteps that validation issue entirely.
+
+resources:
+  jobs:
+    fintech_full_pipeline:
+      name: fintech-full-pipeline-${bundle.target}
+
+      tasks:
+        - task_key: run_dlt_pipeline
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.fintech_cleaning_pipeline.id}
+
+        - task_key: export_to_clean
+          depends_on:
+            - task_key: run_dlt_pipeline
+          notebook_task:
+            notebook_path: ../src/export_to_clean.py
+          existing_cluster_id: 0823-022403-npgq5k7m
+
+        - task_key: vacuum_maintenance
+          depends_on:
+            - task_key: export_to_clean
+          notebook_task:
+            notebook_path: ../src/vacuum_maintenance.py
+          existing_cluster_id: 0823-022403-npgq5k7m
