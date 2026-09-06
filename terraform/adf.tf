@@ -53,3 +53,10 @@ resource "azurerm_role_assignment" "adf_storage_access" {
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_data_factory.fintech.identity[0].principal_id
 }
+
+
+resource "azurerm_data_factory_integration_runtime_self_hosted" "fintech_local" {
+  name            = "fintech-local-runtime"
+  data_factory_id = azurerm_data_factory.fintech.id
+  description     = "Self-hosted IR running on David's local machine, used to copy the dirty data generator's output into ADLS Gen2."
+}
