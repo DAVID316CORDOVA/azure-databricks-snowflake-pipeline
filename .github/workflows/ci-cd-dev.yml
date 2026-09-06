@@ -1,0 +1,67 @@
+name: CI/CD - Databricks Bundle (dev)
+
+# Se dispara automaticamente en cada push a la rama 'dev' que toque el
+# Databricks Asset Bundle, y tambien se puede lanzar manualmente desde
+# la pestaña Actions con "Run workflow".
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - "fintech_pipeline/**"
+      - ".github/workflows/ci-cd-dev.yml"
+  workflow_dispatch:
+
+# Si se hace push varias veces seguidas, cancela la corrida anterior en
+# vez de dejarla colgada -- evita gastar minutos de Actions en corridas
+# obsoletas.
+concurrency:
+  group: databricks-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate-deploy-test:
+    name: Validate, deploy and run full pipeline (dev)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Validate bundle configuration
+        working-directory: fintech_pipeline
+        run: databricks bundle validate -t dev
+
+      - name: Deploy bundle to dev
+        working-directory: fintech_pipeline
+        run: databricks bundle deploy -t dev
+
+      - name: Run full pipeline and wait for result
+        id: run_pipeline
+        working-directory: fintech_pipeline
+        run: databricks bundle run fintech_full_pipeline -t dev
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## Databricks Bundle - dev" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.run_pipeline.outcome }}" = "success" ]; then
+            echo "**Resultado:** el pipeline completo (DLT, Great Expectations, dbt build, Snowpark) corrio y paso todos los checks." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Resultado:** el pipeline fallo. Revisa el log del paso 'Run full pipeline and wait for result' y el Job run en Databricks Workflows." >> "$GITHUB_STEP_SUMMARY"
+          fi

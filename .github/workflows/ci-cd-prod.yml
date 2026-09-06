@@ -1,0 +1,58 @@
+name: CI/CD - Databricks Bundle (prod)
+
+# Se dispara al hacer push/merge a 'main' -- en la practica, esto pasa
+# cuando aceptas un Pull Request de dev -> main. Requiere aprobacion
+# manual si el Environment 'production' tiene un required reviewer
+# configurado (Settings -> Environments en GitHub).
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "fintech_pipeline/**"
+      - ".github/workflows/ci-cd-prod.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: databricks-prod-${{ github.ref }}
+  cancel-in-progress: false  # nunca cancelar un deploy de prod a mitad de camino
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-deploy:
+    name: Validate and deploy bundle (prod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Validate bundle configuration
+        working-directory: fintech_pipeline
+        run: databricks bundle validate -t prod
+
+      - name: Deploy bundle to prod
+        working-directory: fintech_pipeline
+        run: databricks bundle deploy -t prod
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## Databricks Bundle - prod" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Bundle desplegado a produccion desde el commit ${{ github.sha }}." >> "$GITHUB_STEP_SUMMARY"
+          echo "Nota: este workflow solo valida y despliega la definicion del job -- la corrida real con datos ya se probo en el workflow de dev antes del merge." >> "$GITHUB_STEP_SUMMARY"
