@@ -16,14 +16,15 @@ issues (nulls, duplicates, malformed emails, schema drift) already
 covered in the AWS project.
 
 Usage:
-    python generate_dirty_data.py --rows 5000 --seed 42 --output data/raw_customers.json
+    python generate_dirty_data.py --rows 5000 --seed 42
+    python generate_dirty_data.py --rows 5000 --output data/raw_customers.json
 """
 
 import argparse
 import json
 import random
 import string
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 COUNTRIES = ["Peru", "Chile", "Colombia", "Mexico", "Argentina", "Brazil", "Spain"]
 DEVICES = ["android", "ios", "web", "unknown"]
@@ -165,10 +166,32 @@ def generate_dataset(
     return records
 
 
+def generate_output_filename(prefix: str = "raw_customers") -> str:
+    """Genera un nombre de archivo unico con timestamp en UTC-5.
+
+    Necesario para que cada corrida produzca un archivo con nombre
+    distinto: si siempre se escribiera al mismo 'raw_customers.json',
+    cada subida a ADLS /raw/ sobrescribiria a la anterior, y Databricks
+    Autoloader (que rastrea archivos ya ingeridos por path/nombre)
+    ignoraria silenciosamente el archivo "reaparecido" aunque su
+    contenido sea nuevo. El timestamp usa UTC-5 para ser consistente
+    con 'exported_at_utc_minus_5', el campo usado mas adelante en dbt
+    para el dedup con QUALIFY.
+    """
+    utc_minus_5 = timezone(timedelta(hours=-5))
+    ts = datetime.now(utc_minus_5).strftime("%Y%m%dT%H%M%S")
+    return f"data/{prefix}_{ts}.json"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate dirty fintech customer data")
     parser.add_argument("--rows", type=int, default=5000, help="Base number of clean rows before duplicates")
-    parser.add_argument("--output", type=str, default="data/raw_customers.json", help="Output file path")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output file path (default: data/raw_customers_<timestamp_utc-5>.json)",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
     args = parser.parse_args()
 
@@ -177,11 +200,13 @@ def main():
 
     dataset = generate_dataset(args.rows)
 
-    with open(args.output, "w", encoding="utf-8") as f:
+    output_path = args.output or generate_output_filename()
+
+    with open(output_path, "w", encoding="utf-8") as f:
         for record in dataset:
             f.write(json.dumps(record) + "\n")
 
-    print(f"Generated {len(dataset)} records (base rows requested: {args.rows}) -> {args.output}")
+    print(f"Generated {len(dataset)} records (base rows requested: {args.rows}) -> {output_path}")
     print(
         "Injected issues: nulls, duplicates, invalid ages, malformed emails, "
         "schema drift, invalid balances, KYC violations, invalid risk scores"
