@@ -7,3 +7,15 @@ terraform/.terraform/
 terraform/*.tfstate
 terraform/*.tfstate.backup
 terraform/*.tfstate.*.backup
+
+# Terraform variable files (contienen secretos)
+*.tfvars
+*.tfvars.json
+
+# Databricks CLI config
+.databrickscfg
+
+# Terraform state (puede contener secretos en texto plano)
+*.tfstate
+*.tfstate.*
+.terraform/
