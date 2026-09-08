@@ -72,6 +72,9 @@ resources:
             notebook_path: ../src/call_snowflake_risk_procedure.py
           existing_cluster_id: 0823-022403-npgq5k7m
 
+
       email_notifications:
         on_failure:
-          - felix.david.cordova.garcia@gmail.com
+          - ${var.notification_email}
+        no_alert_for_skipped_runs: true
+ 
