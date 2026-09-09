@@ -22,6 +22,10 @@ tests — not just syntax checks.
 - [Why This Project Exists](#why-this-project-exists)
 - [Architecture](#architecture)
 - [Databases, Schemas & Environments](#databases-schemas--environments)
+- [Terraform: Infrastructure as Code](#terraform-infrastructure-as-code)
+- [Databricks Asset Bundle: What It Manages, and How dev/prod Work](#databricks-asset-bundle-what-it-manages-and-how-devprod-work)
+- [dbt: Targeting dev/prod, and What Actually Gets Tested on Every Push](#dbt-targeting-devprod-and-what-actually-gets-tested-on-every-push)
+- [Snowpipe: The Actual Commands Used](#snowpipe-the-actual-commands-used)
 - [Pipeline Walkthrough](#pipeline-walkthrough)
 - [Why Autoloader Here, and Why Snowpipe There](#why-autoloader-here-and-why-snowpipe-there)
 - [Why dbt for the Warehouse Layer](#why-dbt-for-the-warehouse-layer)
@@ -131,6 +135,212 @@ Key tables:
 - `GOLD.MART_BALANCE_BY_COUNTRY` — dbt-built mart.
 - `GOLD.MART_BALANCE_BY_COUNTRY_DYNAMIC` — the same result, built declaratively as a Dynamic Table instead (see below).
 - `GOLD.CUSTOMERS_RISK_CATEGORIZED` — written by the Snowpark stored procedure.
+
+---
+
+## Terraform: Infrastructure as Code
+
+Every Azure resource this pipeline touches is provisioned by Terraform, split
+into four files by concern rather than one monolithic file:
+
+| File | What it provisions |
+|---|---|
+| `providers.tf` | The `azurerm` provider configuration |
+| `variables.tf` | Input variables (subscription ID, region, naming, etc.) |
+| `storage.tf` | `azurerm_resource_group`, `azurerm_storage_account`, and two `azurerm_storage_container` resources (`raw`, `clean`) |
+| `adf.tf` | `azurerm_data_factory`, its Self-hosted Integration Runtime (`azurerm_data_factory_integration_runtime_self_hosted`), the ADLS Gen2 linked service, the Binary sink dataset, and the `azurerm_role_assignment` granting ADF's managed identity **Storage Blob Data Contributor** on the storage account |
+| `databricks.tf` | `azurerm_databricks_workspace` |
+
+**Why the `azurerm_role_assignment` matters, specifically:** a Linked Service
+alone only tells ADF *how to connect* to the storage account — it does not
+grant *permission* to read or write there. RBAC in Azure is a separate layer
+from connectivity. Without this explicit role assignment, ADF's managed
+identity can authenticate against the storage account but every read/write
+call still fails with an authorization error. This is a common gap when
+setting up ADF + ADLS Gen2 for the first time — connectivity working is not
+the same as being authorized.
+
+**What Terraform does *not* manage in this project** — and why that's a
+deliberate scope boundary, not an oversight: the Databricks Job, DLT
+Pipeline, and cluster config are managed by the **Databricks Asset Bundle**
+(below), not Terraform — Databricks-native resources are more naturally
+expressed and versioned as a Bundle than as Terraform `databricks` provider
+resources in this setup. Similarly, all Snowflake objects (databases,
+schemas, the Snowpipe, the masking policy, roles) are managed via manual SQL
+run in Snowsight, not Terraform's `snowflake` provider — a known, explicitly
+tracked gap (see the pending-work notes in this repo) rather than something
+assumed to be covered.
+
+```bash
+cd terraform
+terraform init
+terraform plan
+terraform apply
+```
+
+Required variables come from environment (never committed):
+`ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_TENANT_ID`, `ARM_SUBSCRIPTION_ID`.
+
+---
+
+## Databricks Asset Bundle: What It Manages, and How dev/prod Work
+
+The Bundle (`fintech_pipeline/databricks.yml` + `resources/*.yml`) is the
+single source of truth for every Databricks-native resource this project
+uses: the Job definition (all 6 tasks, their order, their cluster), the DLT
+Pipeline, and — because `include: resources/*.yml` pulls in whatever's
+declared there — any future Databricks resource added the same way, without
+touching `databricks.yml` itself.
+
+**How dev and prod are actually separated — this is worth being precise
+about, because it's a common point of confusion:** both targets point to
+the **exact same** Databricks workspace (`host` is identical in both). What
+actually separates them is the `schema` variable:
+
+```yaml
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      schema: dev
+  prod:
+    mode: production
+    variables:
+      schema: prod
+    permissions:
+      - user_name: felix.david.cordova.garcia@gmail.com
+        level: CAN_MANAGE
+```
+
+Deploying `-t dev` creates Job/Pipeline names prefixed
+`[dev <user>] fintech-full-pipeline-dev` and writes to the `dev` schema
+inside the Databricks catalog; deploying `-t prod` creates the
+production-named equivalents writing to `prod`. `mode: development` also
+matters practically — it prefixes dev-deployed resource names with the
+deploying user's identity automatically, so two people's dev deployments in
+the same workspace never collide.
+
+The `storage_account_key` variable has **no default** in `databricks.yml` on
+purpose — its value must come from the `BUNDLE_VAR_storage_account_key`
+environment variable at deploy time, so the real key is never written into
+any file committed to git. `notification_email` does have a default, since
+an email address isn't a secret the same way a key is.
+
+```bash
+databricks bundle validate -t dev
+databricks bundle deploy -t dev
+databricks bundle run fintech_full_pipeline -t dev   # runs and waits for the result
+```
+
+---
+
+## dbt: Targeting dev/prod, and What Actually Gets Tested on Every Push
+
+dbt's own `dev`/`prod` targets (declared in `profiles.yml`, selected via
+`--target` or the CI environment) point at **two fully separate Snowflake
+databases** — `FINTECH_ANALYTICS` for dev, `FINTECH_ANALYTICS_PROD` for
+prod — not just separate schemas in one database, which is a stricter
+isolation boundary than the Databricks side uses (Databricks separates by
+schema within one workspace; Snowflake separates by database entirely). A
+custom macro, `generate_schema_name.sql`, is what makes dev models land in
+`DEV_SILVER` instead of colliding with prod's `SILVER`.
+
+**What actually runs, and what has to pass, when code is pushed:**
+
+Pushing to `dev` triggers `ci-cd-dev.yml`, which runs `dbt build` as part of
+the full 6-task Job — not `dbt run`. The distinction matters: `dbt build`
+also runs every test declared in `schema.yml` and every singular test in
+`tests/`, and a failed test with `severity: error` (the default) makes
+`dbt build` exit non-zero, which makes the notebook's `subprocess` check
+raise, which fails the Databricks task, which fails the whole CI/CD
+workflow. Concretely, on every push to `dev`, all of the following have to
+pass for the workflow to go green:
+
+- `not_null` / `unique` on `dim_customer.customer_id`
+- `relationships` from `fact_customer_activity.customer_id` to `dim_customer`
+- `dbt_expectations.expect_column_values_to_not_be_null` on `account_balance`
+- The compliance-limit singular test (`assert_balance_within_country_limit.sql`)
+- The post-join emptiness singular test (`assert_fact_not_empty_after_join.sql`)
+
+Three tests are intentionally `severity: warn` instead of `error` — the
+`age` and `risk_score` range checks, and the balance-limit test — because
+they're designed to catch the generator's *intentional* dirty data. A `warn`
+severity means dbt reports the violation (visible in the run output and in
+the published Data Docs) without failing the build over data that's
+supposed to look wrong.
+
+Merging to `main` triggers `ci-cd-prod.yml`, which validates and deploys the
+same bundle with `-t prod` — but deliberately does **not** re-run `dbt
+build` against production data; that would duplicate what dev's run already
+proved and spend compute without a human decision in the loop.
+
+---
+
+## Snowpipe: The Actual Commands Used
+
+**1. External stage** — points at the ADLS Gen2 `/clean/` container.
+Created once per environment:
+
+```sql
+CREATE OR REPLACE STAGE FINTECH_CLEAN_STAGE_DEV
+    URL = 'azure://stfintechpipeline01.blob.core.windows.net/clean/dev/'
+    STORAGE_INTEGRATION = <your_azure_storage_integration>;
+
+CREATE OR REPLACE STAGE FINTECH_CLEAN_STAGE_PROD
+    URL = 'azure://stfintechpipeline01.blob.core.windows.net/clean/prod/'
+    STORAGE_INTEGRATION = <your_azure_storage_integration>;
+```
+
+**2. Notification Integration** — the Azure-side event bridge (Event Grid →
+Storage Queue) that tells Snowflake a new file has landed:
+
+```sql
+CREATE OR REPLACE NOTIFICATION INTEGRATION AZURE_FINTECH_NOTIFICATION
+    TYPE = QUEUE
+    NOTIFICATION_PROVIDER = AZURE_STORAGE_QUEUE
+    ENABLED = TRUE
+    AZURE_STORAGE_QUEUE_PRIMARY_URI = '<your_storage_queue_uri>'
+    AZURE_TENANT_ID = '<your_azure_tenant_id>';
+```
+
+**3. The pipes themselves** — one per environment, each pointed at its own
+stage, with a `PATTERN` restricting ingestion to actual Parquet output (a
+fix added after Snowpipe initially tried to load Spark's internal control
+files — `_SUCCESS`, `_started_*`, `_committed_*` — as if they were data):
+
+```sql
+USE DATABASE FINTECH_ANALYTICS;
+USE SCHEMA RAW;
+
+CREATE OR REPLACE PIPE CUSTOMERS_PIPE_DEV
+    AUTO_INGEST = TRUE
+    INTEGRATION = 'AZURE_FINTECH_NOTIFICATION'
+    AS
+    COPY INTO customers_raw
+    FROM @fintech_clean_stage_dev
+    PATTERN = '.*\\.parquet'
+    FILE_FORMAT = (TYPE = 'PARQUET')
+    MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;
+
+USE DATABASE FINTECH_ANALYTICS_PROD;
+USE SCHEMA RAW;
+
+CREATE OR REPLACE PIPE CUSTOMERS_PIPE_PROD
+    AUTO_INGEST = TRUE
+    INTEGRATION = 'AZURE_FINTECH_NOTIFICATION'
+    AS
+    COPY INTO customers_raw
+    FROM @fintech_clean_stage_prod
+    PATTERN = '.*\\.parquet'
+    FILE_FORMAT = (TYPE = 'PARQUET')
+    MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;
+```
+
+`MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE` matters here specifically because
+the Parquet schema comes from Spark/Delta column names, and matching by
+name rather than position keeps the pipe resilient to column reordering in
+future pipeline changes.
 
 ---
 
