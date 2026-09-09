@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+  - name: raw
+    database: FINTECH_ANALYTICS
+    schema: RAW
+    tables:
+      - name: customers_raw
