@@ -1,0 +1,23 @@
+fintech_dbt_medallion:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: MZJLBCT-CUC08629
+      user: david
+      password: "{{ env_var('DBT_SNOWFLAKE_PASSWORD') }}"
+      role: ACCOUNTADMIN
+      database: FINTECH_ANALYTICS
+      warehouse: COMPUTE_WH
+      schema: dev
+      threads: 2
+    prod:
+      type: snowflake
+      account: MZJLBCT-CUC08629
+      user: david
+      password: "{{ env_var('DBT_SNOWFLAKE_PASSWORD') }}"
+      role: ACCOUNTADMIN
+      database: FINTECH_ANALYTICS_PROD
+      warehouse: COMPUTE_WH
+      schema: prod
+      threads: 2

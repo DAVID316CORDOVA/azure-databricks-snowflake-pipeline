@@ -19,3 +19,8 @@ terraform/*.tfstate.*.backup
 *.tfstate
 *.tfstate.*
 .terraform/
+
+# Artefactos generados localmente, no versionar
+downloaded_parquet/
+ge_docs_project/
+logs/
