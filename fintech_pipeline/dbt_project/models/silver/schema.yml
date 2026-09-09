@@ -2,6 +2,9 @@ version: 2
 
 models:
   - name: dim_customer
+    config:
+      post-hook:
+        - "{{ 'ALTER TABLE ' ~ this ~ ' MODIFY COLUMN email SET MASKING POLICY fintech_analytics_prod.gold.mask_email;' if target.name == 'prod' else '' }}"
     columns:
       - name: customer_id
         tests:
