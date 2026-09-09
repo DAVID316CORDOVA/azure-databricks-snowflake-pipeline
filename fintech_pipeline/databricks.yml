@@ -29,6 +29,10 @@ variables:
     # gets committed to git.
     description: Access key for the ADLS Gen2 storage account. Provided via the BUNDLE_VAR_storage_account_key environment variable, never hardcoded in this repo.
 
+  notification_email:
+    description: "Email que recibe alertas de fallo del Job"
+    default: felix.david.cordova.garcia@gmail.com
+
 # A "target" is one deployment destination -- think of it as one
 # environment. This project has two: dev and prod. Both point to the
 # SAME Databricks workspace, but each uses a DIFFERENT schema, so their

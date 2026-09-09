@@ -1,0 +1,46 @@
+version: 2
+
+models:
+  - name: dim_customer
+    config:
+      post-hook:
+        - "{{ 'ALTER TABLE ' ~ this ~ ' MODIFY COLUMN email SET MASKING POLICY fintech_analytics_prod.gold.mask_email;' if target.name == 'prod' else '' }}"
+    columns:
+      - name: customer_id
+        tests:
+          - unique
+          - not_null
+      - name: age
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              severity: warn
+              arguments:
+                min_value: 0
+                max_value: 120
+
+  - name: fact_customer_activity
+
+    columns:
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customer')
+              field: customer_id
+      - name: account_balance
+        tests:
+          - dbt_expectations.expect_column_values_to_not_be_null
+      - name: risk_score
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              severity: warn
+              arguments:
+                min_value: -50
+                max_value: 200
+
+  - name: dim_service
+    columns:
+      - name: device_id
+        tests:
+          - unique
+          - not_null
